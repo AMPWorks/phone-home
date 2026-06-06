@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+todo.md
+todo_plans/
+.todo-handler/
