@@ -63,6 +63,30 @@ def is_loopback(addr):
     return addr in LOOPBACK
 
 
+# --------------------------------------------------------------------------- versioning
+#
+# Every wire/file format carries an explicit version so future format changes are
+# straightforward and non-breaking (cf. the agentmesh protocol's versioning):
+#
+#   * API path  — endpoints live under `/v{API_VERSION}/…` (e.g. `/v1/say`). The
+#     iOS Shortcut URL embeds the version, so a server upgrade can serve `/v2/…`
+#     ALONGSIDE `/v1/…` and never break already-installed shortcuts. An unknown
+#     version path is rejected with a clear `unsupported api version` error.
+#   * Registry file — carries a top-level `"version"`; load migrates/guards on it.
+#   * Registration payload + stored entry — carry `format_version`; a client may
+#     send `"v"` and the server rejects a *newer* format it doesn't understand.
+#   * Responses — carry an `X-Phone-Home-Version` header (and a `version` field in
+#     JSON object responses) so clients can detect the server's format.
+#
+# Deprecation policy (within a major version): fields are only ADDED, never
+# repurposed or removed; unknown request fields are ignored (forward-compatible).
+# A breaking change takes a NEW version (new path / bumped SCHEMA_VERSION) served
+# next to the old until clients migrate.
+API_VERSION = "1"          # URL path version: /v1/<endpoint>
+SCHEMA_VERSION = 1         # registry-file schema version
+REG_FORMAT_VERSION = 1     # registration payload / stored-entry format version
+
+
 def _flatten(text):
     """One line, trimmed. Enter submits in the TUI; a stray newline fires early."""
     return " ".join(text.splitlines()).strip()
@@ -152,13 +176,23 @@ class Registry:
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 d = json.load(fh)
-            if isinstance(d, dict) and isinstance(d.get("sessions"), list):
-                return d
         except (OSError, ValueError):
-            pass
-        return {"sessions": []}
+            return {"version": SCHEMA_VERSION, "sessions": []}
+        if not (isinstance(d, dict) and isinstance(d.get("sessions"), list)):
+            return {"version": SCHEMA_VERSION, "sessions": []}
+        ver = d.get("version", 1)  # files written before versioning are v1
+        if ver > SCHEMA_VERSION:
+            # A newer schema than we understand: do NOT clobber it. Start empty
+            # in-memory; we won't overwrite the file unless a write is forced.
+            print("phone-home: registry schema v%s > supported v%s; ignoring on load"
+                  % (ver, SCHEMA_VERSION), file=sys.stderr)
+            return {"version": SCHEMA_VERSION, "sessions": []}
+        # ver <= SCHEMA_VERSION: (future) run migrations here; v1 needs none.
+        d["version"] = SCHEMA_VERSION
+        return d
 
     def _save_locked(self):
+        self._data["version"] = SCHEMA_VERSION
         tmp = self.path + ".tmp.%d" % os.getpid()
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(self._data, fh, indent=2)
@@ -178,6 +212,7 @@ class Registry:
                 if not (s["tmux_socket"] == tmux_socket and s["pane_id"] == pane_id)
             ]
             entry = {
+                "format_version": REG_FORMAT_VERSION,
                 "id": secrets.token_urlsafe(16),
                 "label": label,
                 "tmux_socket": tmux_socket,
@@ -269,9 +304,23 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("X-Phone-Home-Version", API_VERSION)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _endpoint(self):
+        """Strip the required `/v{API_VERSION}/` prefix; return the endpoint name,
+        or None (and send an error) if the version is missing/unsupported."""
+        parts = urlparse(self.path).path.strip("/").split("/", 1)
+        if not parts or not parts[0].startswith("v") or not parts[0][1:].isdigit():
+            self.send_error(404, "missing api version prefix (use /v%s/...)" % API_VERSION)
+            return None
+        if parts[0] != "v" + API_VERSION:
+            self.send_error(404, "unsupported api version %r (this server speaks v%s)"
+                            % (parts[0], API_VERSION))
+            return None
+        return parts[1] if len(parts) > 1 else ""
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -282,21 +331,26 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return None
 
-    # ---- routing
+    # ---- routing (all endpoints under /v{API_VERSION}/)
     def do_POST(self):
-        path = urlparse(self.path).path
-        if path == "/register":
+        ep = self._endpoint()
+        if ep is None:
+            return
+        if ep == "register":
             return self._register()
-        if path == "/deregister":
+        if ep == "deregister":
             return self._deregister()
         self.send_error(404)
 
     def do_GET(self):
-        u = urlparse(self.path)
-        if u.path == "/sessions":
-            return self._sessions(parse_qs(u.query))
-        if u.path == "/say":
-            return self._say(parse_qs(u.query))
+        ep = self._endpoint()
+        if ep is None:
+            return
+        q = parse_qs(urlparse(self.path).query)
+        if ep == "sessions":
+            return self._sessions(q)
+        if ep == "say":
+            return self._say(q)
         self.send_error(404)
 
     # ---- loopback-only
@@ -307,6 +361,15 @@ class Handler(BaseHTTPRequestHandler):
         if b is None:
             return self.send_error(400, "bad json")
         srv = self.server
+        # Registration payload format version: reject a NEWER format we can't
+        # parse; ignore unknown fields (forward-compatible, additive-only).
+        try:
+            bver = int(b.get("v", REG_FORMAT_VERSION))
+        except (TypeError, ValueError):
+            return self.send_error(400, "bad registration format version")
+        if bver > REG_FORMAT_VERSION:
+            return self.send_error(400, "unsupported registration format v%d (server speaks v%d)"
+                                   % (bver, REG_FORMAT_VERSION))
         if srv.register_secret and not hmac_eq(b.get("register_secret", ""), srv.register_secret):
             return self.send_error(403, "bad register secret")
         for k in ("label", "tmux_socket", "pane_id", "viewer_url"):
@@ -322,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
                                           b["viewer_url"], b.get("repo", ""))
         except ValueError as e:
             return self.send_error(400, str(e))
-        self._json(200, {"id": entry["id"], "label": entry["label"]})
+        self._json(200, {"version": REG_FORMAT_VERSION, "id": entry["id"], "label": entry["label"]})
 
     def _deregister(self):
         if not self._client_is_loopback():

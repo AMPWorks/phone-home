@@ -141,6 +141,22 @@ class TestRegistry(unittest.TestCase):
         r2 = ph.Registry(self.path)  # reload from disk
         self.assertEqual(len(r2.live()), 1)
 
+    def test_registry_file_is_versioned(self):
+        r = ph.Registry(self.path)
+        r.register("a", "/s", "%alive", "u1")
+        with open(self.path, "r", encoding="utf-8") as fh:
+            disk = json.load(fh)
+        self.assertEqual(disk["version"], ph.SCHEMA_VERSION)
+        self.assertEqual(disk["sessions"][0]["format_version"], ph.REG_FORMAT_VERSION)
+
+    def test_newer_schema_not_clobbered_on_load(self):
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump({"version": 999, "sessions": [{"id": "x"}]}, fh)
+        r = ph.Registry(self.path)            # refuses to load a newer schema
+        self.assertEqual(r.live(), [])
+        with open(self.path, "r", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["version"], 999)  # file left intact (not downgraded)
+
 
 class TestStrictGuard(unittest.TestCase):
     def _patch_capture(self, text, rc=0):
@@ -217,50 +233,80 @@ class TestHTTP(unittest.TestCase):
             c.close()
 
     def test_register_requires_secret(self):
-        st, _ = self._post("/register", {"label": "a", "tmux_socket": "/s",
-                                         "pane_id": "%1", "viewer_url": "claude://x"})
+        st, _ = self._post("/v1/register", {"label": "a", "tmux_socket": "/s",
+                                            "pane_id": "%1", "viewer_url": "claude://x"})
         self.assertEqual(st, 403)  # missing register_secret
 
     def test_full_flow(self):
-        st, body = self._post("/register", {"register_secret": "REG", "label": "repoA",
+        st, body = self._post("/v1/register", {"register_secret": "REG", "label": "repoA",
                               "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "claude://code/abc"})
         self.assertEqual(st, 200)
+        self.assertEqual(json.loads(body)["version"], ph.REG_FORMAT_VERSION)
         sid = json.loads(body)["id"]
 
-        st, _, body = self._get("/sessions?token=TOK")
+        st, _, body = self._get("/v1/sessions?token=TOK")
         self.assertEqual(st, 200)
         self.assertEqual(json.loads(body)[0]["label"], "repoA")
 
         # wrong token rejected
-        st, _, _ = self._get("/sessions?token=WRONG")
+        st, _, _ = self._get("/v1/sessions?token=WRONG")
         self.assertEqual(st, 403)
 
         # /say injects + 302s to the viewer_url
-        st, loc, _ = self._get("/say?token=TOK&session=%s&q=hello%%20world" % sid)
+        st, loc, _ = self._get("/v1/say?token=TOK&session=%s&q=hello%%20world" % sid)
         self.assertEqual(st, 302)
         self.assertEqual(loc, "claude://code/abc")
         self.assertEqual(self.injected[-1], ("%1", "hello world"))
 
     def test_say_wrong_token(self):
-        st, _, _ = self._get("/say?token=NOPE&session=x&q=hi")
+        st, _, _ = self._get("/v1/say?token=NOPE&session=x&q=hi")
         self.assertEqual(st, 403)
 
     def test_say_strict_refuses_when_not_idle(self):
-        self._post("/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
-                                 "pane_id": "%1", "viewer_url": "v"})
-        sid = json.loads(self._get("/sessions?token=TOK")[2])[0]["id"]
+        self._post("/v1/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
+                                    "pane_id": "%1", "viewer_url": "v"})
+        sid = json.loads(self._get("/v1/sessions?token=TOK")[2])[0]["id"]
         self.idle = False
-        st, _, _ = self._get("/say?token=TOK&session=%s&q=do+it" % sid)
+        st, _, _ = self._get("/v1/say?token=TOK&session=%s&q=do+it" % sid)
         self.assertEqual(st, 409)
         self.assertEqual(self.injected, [])  # nothing injected
 
     def test_deregister(self):
-        self._post("/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
-                                 "pane_id": "%1", "viewer_url": "v"})
-        st, body = self._post("/deregister", {"label": "r"})
+        self._post("/v1/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
+                                    "pane_id": "%1", "viewer_url": "v"})
+        st, body = self._post("/v1/deregister", {"label": "r"})
         self.assertEqual(st, 200)
         self.assertEqual(json.loads(body)["removed"], 1)
-        self.assertEqual(json.loads(self._get("/sessions?token=TOK")[2]), [])
+        self.assertEqual(json.loads(self._get("/v1/sessions?token=TOK")[2]), [])
+
+    # ---- versioning
+    def test_unversioned_path_rejected(self):
+        st, _, _ = self._get("/sessions?token=TOK")          # no /vN/ prefix
+        self.assertEqual(st, 404)
+
+    def test_unknown_version_rejected(self):
+        st, _, _ = self._get("/v2/sessions?token=TOK")       # future version
+        self.assertEqual(st, 404)
+
+    def test_response_carries_version_header(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        try:
+            c.request("GET", "/v1/sessions?token=TOK")
+            r = c.getresponse()
+            self.assertEqual(r.getheader("X-Phone-Home-Version"), ph.API_VERSION)
+            r.read()
+        finally:
+            c.close()
+
+    def test_future_registration_format_rejected(self):
+        st, _ = self._post("/v1/register", {"register_secret": "REG", "v": 99, "label": "r",
+                            "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "v"})
+        self.assertEqual(st, 400)  # newer payload format than the server understands
+
+    def test_unknown_fields_ignored(self):
+        st, _ = self._post("/v1/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
+                            "pane_id": "%1", "viewer_url": "v", "future_field": "x"})
+        self.assertEqual(st, 200)  # additive/forward-compatible
 
 
 if __name__ == "__main__":
