@@ -132,8 +132,24 @@ class TestRegistry(unittest.TestCase):
         r.register("a", "/s", "%alive", "u1")
         r.register("b", "/s", "%two", "u2")
         self.assertEqual(r.deregister(label="a"), 1)
-        self.assertEqual(r.deregister(pane_id="%two"), 1)
+        self.assertEqual(r.deregister(pane_id="%two", tmux_socket="/s"), 1)
         self.assertEqual(len(r.live()), 0)
+
+    def test_deregister_by_pane_is_socket_scoped(self):
+        """A bare pane_id (no socket) must NOT drop a same-pane session on
+        another tmux server — pane ids like %0/%1 repeat across servers."""
+        # Two servers, same pane id %alive — distinct fingerprints per socket.
+        self._fps[("/s2", "%alive")] = "4321 777"
+        r = ph.Registry(self.path)
+        r.register("serverA", "/s", "%alive", "u1")
+        r.register("serverB", "/s2", "%alive", "u2")
+        # pane_id alone matches nothing (fail-closed): both survive.
+        self.assertEqual(r.deregister(pane_id="%alive"), 0)
+        self.assertEqual(len(r.live()), 2)
+        # Socket-scoped dereg removes only the intended one.
+        self.assertEqual(r.deregister(pane_id="%alive", tmux_socket="/s2"), 1)
+        labels = {s["label"] for s in r.live()}
+        self.assertEqual(labels, {"serverA"})
 
     def test_persists_atomically_across_instances(self):
         r1 = ph.Registry(self.path)
@@ -262,6 +278,16 @@ class TestHTTP(unittest.TestCase):
         st, _, _ = self._get("/v1/say?token=NOPE&session=x&q=hi")
         self.assertEqual(st, 403)
 
+    def test_say_missing_tmux_is_502_not_500(self):
+        self._post("/v1/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
+                                    "pane_id": "%1", "viewer_url": "v"})
+        sid = json.loads(self._get("/v1/sessions?token=TOK")[2])[0]["id"]
+        def _boom(sock, pane, text, delay):
+            raise FileNotFoundError(2, "No such file or directory: 'tmux'")
+        ph.inject = _boom  # simulate launchd PATH without /opt/homebrew/bin
+        st, _, _ = self._get("/v1/say?token=TOK&session=%s&q=hi" % sid)
+        self.assertEqual(st, 502)  # clean gateway error, not an uncaught 500
+
     def test_say_strict_refuses_when_not_idle(self):
         self._post("/v1/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
                                     "pane_id": "%1", "viewer_url": "v"})
@@ -278,6 +304,18 @@ class TestHTTP(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertEqual(json.loads(body)["removed"], 1)
         self.assertEqual(json.loads(self._get("/v1/sessions?token=TOK")[2]), [])
+
+    def test_deregister_pane_requires_socket(self):
+        self._post("/v1/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
+                                    "pane_id": "%1", "viewer_url": "v"})
+        # pane_id without tmux_socket is rejected (pane ids repeat across servers)
+        st, _ = self._post("/v1/deregister", {"pane_id": "%1"})
+        self.assertEqual(st, 400)
+        self.assertEqual(len(json.loads(self._get("/v1/sessions?token=TOK")[2])), 1)
+        # pane_id + tmux_socket succeeds
+        st, body = self._post("/v1/deregister", {"pane_id": "%1", "tmux_socket": "/s"})
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(body)["removed"], 1)
 
     # ---- versioning
     def test_unversioned_path_rejected(self):

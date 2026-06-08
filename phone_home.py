@@ -226,14 +226,21 @@ class Registry:
             self._save_locked()
             return entry
 
-    def deregister(self, label=None, pane_id=None):
+    def deregister(self, label=None, pane_id=None, tmux_socket=None):
+        """Remove sessions matching the given selector. A pane match is ALWAYS
+        scoped to its socket: bare pane ids (the first pane of every tmux server
+        is %0/%1) are reused across servers, so deregistering by pane_id alone
+        would silently drop an unrelated live session in another tmux server."""
+        def _match(s):
+            if label is not None and s["label"] == label:
+                return True
+            if (pane_id is not None and tmux_socket is not None
+                    and s["pane_id"] == pane_id and s["tmux_socket"] == tmux_socket):
+                return True
+            return False
         with self._lock:
             before = len(self._data["sessions"])
-            self._data["sessions"] = [
-                s for s in self._data["sessions"]
-                if not ((label is not None and s["label"] == label)
-                        or (pane_id is not None and s["pane_id"] == pane_id))
-            ]
+            self._data["sessions"] = [s for s in self._data["sessions"] if not _match(s)]
             removed = before - len(self._data["sessions"])
             if removed:
                 self._save_locked()
@@ -393,9 +400,11 @@ class Handler(BaseHTTPRequestHandler):
         b = self._body()
         if b is None:
             return self.send_error(400, "bad json")
-        if not (b.get("label") or b.get("pane_id")):
-            return self.send_error(400, "need label or pane_id")
-        removed = self.server.registry.deregister(label=b.get("label"), pane_id=b.get("pane_id"))
+        # A pane match must be socket-scoped (pane ids repeat across tmux servers).
+        if not (b.get("label") or (b.get("pane_id") and b.get("tmux_socket"))):
+            return self.send_error(400, "need label, or pane_id + tmux_socket")
+        removed = self.server.registry.deregister(
+            label=b.get("label"), pane_id=b.get("pane_id"), tmux_socket=b.get("tmux_socket"))
         self._json(200, {"removed": removed})
 
     # ---- token-gated (may be public via tunnel)
@@ -421,11 +430,13 @@ class Handler(BaseHTTPRequestHandler):
         s = srv.registry.resolve(key)
         if s is None:
             return self.send_error(404, "no live session %r" % key)
-        if srv.strict and not pane_looks_idle(s["tmux_socket"], s["pane_id"]):
-            return self.send_error(409, "target not at an idle prompt (strict guard)")
         try:
+            if srv.strict and not pane_looks_idle(s["tmux_socket"], s["pane_id"]):
+                return self.send_error(409, "target not at an idle prompt (strict guard)")
             inject(s["tmux_socket"], s["pane_id"], text, srv.submit_delay)
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, OSError) as e:
+            # OSError covers a missing `tmux` binary (FileNotFoundError) — e.g. a
+            # launchd PATH that lacks /opt/homebrew/bin — so it 502s, not 500s.
             return self.send_error(502, "inject failed: %s" % e)
         self.send_response(302)
         self.send_header("Location", s["viewer_url"])

@@ -97,6 +97,12 @@ The final step **must** be a foreground Safari navigation for the 302 to open th
 viewer. Bind it to the Action Button / Back Tap. A static per-session shortcut
 (skip the chooser) is the fast path.
 
+> **If you enable replay protection** (`PHONE_HOME_REPLAY_TTL` > 0, off by default
+> in v1): the relay then **requires** a unique `&nonce=` on every `/v1/say`, and
+> rejects a missing/reused one with `409`. Add a **UUID** action in the Shortcut
+> before the final step and append `&nonce=<that-uuid>` to the `/v1/say` URL.
+> With the default `PHONE_HOME_REPLAY_TTL=0` no nonce is needed.
+
 ## Versioning
 
 Every wire/file format is versioned so changes stay non-breaking:

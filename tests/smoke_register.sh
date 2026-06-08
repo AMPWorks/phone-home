@@ -38,8 +38,8 @@ if PHONE_HOME_PORT="$PORT" PHONE_HOME_REGISTER_SECRET=wrong \
   echo "  FAIL: bad secret accepted"; exit 1
 else echo "  refused OK"; fi
 
-echo "== deregister.sh =="
-PHONE_HOME_PORT="$PORT" bash deregister.sh --pane "$PANE"
+echo "== deregister.sh (socket-scoped) =="
+PHONE_HOME_PORT="$PORT" bash deregister.sh --pane "$PANE" --socket "$SOCK"
 if curl -fsS "http://127.0.0.1:$PORT/v1/sessions?token=tok" | grep -q smoketest; then
   echo "  FAIL: still registered"; exit 1
 else echo "  deregister OK"; fi

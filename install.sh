@@ -52,6 +52,10 @@ WRAPPER="$PREFIX/run.sh"
 if [[ -n "$DRY" ]]; then echo "+ write $WRAPPER"; else cat > "$WRAPPER" <<WRAP
 #!/usr/bin/env bash
 set -euo pipefail
+# launchd hands user agents a minimal PATH that excludes Homebrew; the relay
+# shells out to a bare \`tmux\`, so prepend the usual brew + system bin dirs
+# (Apple-Silicon /opt/homebrew, Intel /usr/local) or every inject would fail.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 export PHONE_HOME_TOKEN="\$(security find-generic-password -a "\$USER" -s $KC_TOKEN -w)"
 export PHONE_HOME_REGISTER_SECRET="\$(security find-generic-password -a "\$USER" -s $KC_REG -w)"
 exec /usr/bin/python3 "$PREFIX/phone_home.py" \\

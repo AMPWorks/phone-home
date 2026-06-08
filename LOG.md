@@ -66,3 +66,31 @@ failed with `5: Input/output error` on the headless/Aqua mini, while the legacy
 `load -w`. `cloudflare-setup.sh` exposes only `/v1/say` + `/v1/sessions` at
 `phone-home.ampworksstudio.com` via a Cloudflare Tunnel, keeping register/deregister
 loopback-only as defense-in-depth over the relay's own in-process check.
+
+## 2026-06-07 — Self-review caught four deployment bugs
+
+A fresh-eyes review of the whole diff (PR #1) surfaced four real bugs — none in
+the load-bearing safety properties (literal `-l` send, loopback-only register,
+pid+start fingerprint, fail-closed token compare all held), but three of them
+would have bitten on the very first deploy to the actual Mac mini:
+
+1. **Deregister was scoped by `pane_id` alone, not `(socket, pane_id)`.** Since the
+   first pane of every tmux server is `%0`/`%1`, a SessionEnd hook in one tmux
+   server could silently deregister an unrelated live session in another. Fixed to
+   require the socket: a pane match is always socket-scoped, and a bare `pane_id`
+   now matches nothing (fail-closed) — `deregister.sh` resolves + sends the socket.
+2. **The LaunchAgent had no `PATH`,** so the relay's bare `tmux` calls would fail on
+   the Apple-Silicon mini (brew `tmux` is in `/opt/homebrew/bin`, which launchd
+   excludes) — every registration would report "pane does not exist." The run
+   wrapper now prepends the brew + system bin dirs.
+3. **`/say` only caught `CalledProcessError`,** so a missing `tmux` (bug #2) would
+   500 with a traceback instead of a clean 502. Now catches `OSError` too, with the
+   strict idle-guard moved inside the same try.
+4. **Replay-nonce vs. the documented Shortcut:** enabling `PHONE_HOME_REPLAY_TTL`
+   would 409 every dictation because the README's iOS Shortcut sends no `&nonce`.
+   Documented the UUID step required when replay protection is turned on.
+
+The takeaway worth recording: unit tests with a mocked tmux layer can't catch a
+launchd `PATH` gap or a cross-server pane collision — those live in the seams
+between the process and its environment. Added regression tests for the
+socket-scoped deregister and the missing-`tmux` 502 path (32 tests, all green).
