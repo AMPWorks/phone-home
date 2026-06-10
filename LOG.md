@@ -94,3 +94,38 @@ The takeaway worth recording: unit tests with a mocked tmux layer can't catch a
 launchd `PATH` gap or a cross-server pane collision — those live in the seams
 between the process and its environment. Added regression tests for the
 socket-scoped deregister and the missing-`tmux` 502 path (32 tests, all green).
+
+## 2026-06-10 — On-box end-to-end testing: three real corrections
+
+Live testing on the Mini + iPhone (the dominant Testing-Required work) drove three
+fixes the mocked tests couldn't surface — the first two are course-corrections on
+original design assumptions:
+
+1. **The viewer is a web session URL, not a deep-link.** The build assumed the
+   viewer was `claude://code/{session_id}` (Open Question Q1). On the phone it
+   opened the Claude app but never the right session: there is **no
+   per-session `claude://` deep-link scheme**, and the id we used was the local
+   transcript UUID, not the remote-control id. The correct viewer is the
+   **`https://claude.ai/code/session_XXX`** URL Claude prints at
+   `--remote-control` start. Fixed: `register.sh`'s template defaults to that, and
+   the SessionStart hook now polls the session transcript for the URL (it lands
+   just after remote-control connects, post-SessionStart) and registers with it —
+   falling back to the generic Code tab if it never appears. The hook also now
+   supplies the Keychain register-secret (registration would otherwise be rejected).
+
+2. **The strict guard treated the idle `❯` prompt as a menu.** The amp-agent TUI
+   draws `❯` as its *idle input-prompt* glyph, but the guard listed `❯` (and bare
+   `1.`/`2.`) as danger signals → it 409'd **every** injection, idle or not. Reworked
+   to detect real menus (≥2 numbered option markers) and a `❯` used as a *selection
+   cursor* (followed by option text) — while treating a bare `❯` as idle. A
+   self-review then caught a fail-open in the rework (a `Continue?\n❯` confirmation
+   read as idle); closed by also refusing when a recent line ends in `?`.
+
+3. **The iOS Shortcut must URL-encode the dictation.** Without a URL-encode step the
+   first space ended the `q` value, so only the first dictated word reached the
+   relay. Documented in the Shortcut instructions.
+
+The meta-lesson: the parts that broke were all at the boundary with systems the
+test harness mocks away — the iOS app's URL handling, the live TUI's exact glyphs,
+and Shortcuts' URL building. The relay logic was sound; the integration seams were
+where the assumptions were wrong.

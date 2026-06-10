@@ -9,7 +9,15 @@
 #   PHONE_HOME_PORT             relay port (default 8765)
 #   PHONE_HOME_REGISTER_SECRET  secret the relay's /register requires (if set)
 #   PHONE_HOME_VIEWER_TEMPLATE  viewer_url template; {session_id} is substituted
-#                               (default 'claude://code/{session_id}')
+#                               (default 'https://claude.ai/code/{session_id}').
+#                               NB: {session_id} here is the *remote-control*
+#                               session id (the "session_XXX" in the URL Claude
+#                               prints at `--remote-control` start), NOT the local
+#                               session UUID. There is no `claude://code/<id>`
+#                               deep-link scheme; the iOS app opens the remote
+#                               session via this claude.ai/code URL. Prefer passing
+#                               the full URL with --viewer (the SessionStart hook
+#                               extracts it from the session log).
 #
 # Flags: --label L  --viewer URL  --session-id ID  --pane %N  --socket PATH
 #        --repo R   --force
@@ -19,7 +27,7 @@ set -euo pipefail
 
 PORT="${PHONE_HOME_PORT:-8765}"
 SECRET="${PHONE_HOME_REGISTER_SECRET:-}"
-VIEWER_TEMPLATE="${PHONE_HOME_VIEWER_TEMPLATE:-claude://code/{session_id}}"
+VIEWER_TEMPLATE="${PHONE_HOME_VIEWER_TEMPLATE:-https://claude.ai/code/{session_id}}"
 API="v1"   # versioned API path; bump when the relay's format changes
 
 label="" viewer="" session_id="" pane="" socket="" repo="" force=""

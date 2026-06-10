@@ -132,11 +132,19 @@ def pane_looks_idle(socket_path, pane_id):
     r = _tmux(socket_path, "capture-pane", "-p", "-t", pane_id, "-S", "-12")
     if r.returncode != 0:
         return False
-    tail = r.stdout.lower()
+    raw = r.stdout
+    tail = raw.lower()
+    nonempty = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
     # Danger signals: a pending permission/confirmation prompt.
     danger = ("y/n", "(y/n)", "yes/no", "[y/n]", "do you want", "proceed?",
               "approve", "press enter to", "select", "choose")
     if any(d in tail for d in danger):
+        return False
+    # A pending question: any of the last few visible lines ends in "?" (e.g.
+    # "Continue?", "Overwrite this file?") — a confirmation the danger keywords
+    # above don't enumerate. Bounded to the last 3 non-empty lines so a rhetorical
+    # "?" higher up in finished output doesn't permanently wedge the prompt.
+    if any(ln.rstrip().endswith("?") for ln in nonempty[-3:]):
         return False
     # A numbered-choice menu (a selection list, or the periodic "How is Claude
     # doing this session?" survey: "1: Bad  2: Fine  3: Good  0: Dismiss"): two or
@@ -149,9 +157,16 @@ def pane_looks_idle(socket_path, pane_id):
     )
     if opt_markers >= 2:
         return False
+    # "❯" used as a SELECTION CURSOR — followed by option text on its line, e.g.
+    # "❯ Yes" / "❯ 1) Apply" — is a menu/confirmation, not the idle input prompt.
+    # (The idle prompt is a BARE "❯" with the input area empty.)
+    for ln in nonempty:
+        i = ln.find("❯")
+        if i != -1 and ln[i + 1:].strip():
+            return False
     # Idle signal: a Claude Code input prompt near the bottom. The amp-agent TUI
     # draws "❯" as its prompt glyph; the standard TUI draws "│ >" / a "╰" box edge
-    # / the "for shortcuts" hint. (Menus are excluded by the check above.)
+    # / the "for shortcuts" hint. (Menus / cursors are excluded above.)
     idle = ("❯", "│ >", "> ", "╰", "esc to", "for shortcuts")
     return any(s in tail for s in idle)
 

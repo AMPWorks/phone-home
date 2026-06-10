@@ -222,6 +222,19 @@ class TestStrictGuard(unittest.TestCase):
             "\u276f ")
         self.assertFalse(ph.pane_looks_idle("/s", "%a"))
 
+    def test_refuses_on_yes_no_cursor(self):
+        # "\u276f" used as a selection cursor on a Yes/No (followed by option
+        # text) is a confirmation, NOT the idle input prompt → refuse (fail-open
+        # closed: bypassPermissions confirmations can render this way).
+        self._patch_capture("Would you like to continue with this edit\n \u276f Yes\n   No")
+        self.assertFalse(ph.pane_looks_idle("/s", "%a"))
+
+    def test_refuses_on_trailing_question(self):
+        # A pending question on a recent line (even above a bare "\u276f" prompt)
+        # → refuse. The danger keyword list does not enumerate every confirmation.
+        self._patch_capture("Overwrite this file?\n \u276f ")
+        self.assertFalse(ph.pane_looks_idle("/s", "%a"))
+
 
 class TestHTTP(unittest.TestCase):
     """End-to-end over a real loopback server, with the tmux layer mocked."""

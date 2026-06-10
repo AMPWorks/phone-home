@@ -41,7 +41,11 @@ stand it up on your own box without any other infrastructure.
     parsed as keys; Enter is a separate keypress after a short delay.
 - **`register.sh` / `deregister.sh`** + **`hooks/session-{start,end}.sh`** — a
   session self-registers (Claude Code SessionStart hook) and deregisters
-  (SessionEnd); `viewer_url` defaults to `claude://code/{session_id}`.
+  (SessionEnd). The `viewer_url` is the remote-control **session URL** Claude
+  prints at `--remote-control` start (`https://claude.ai/code/session_XXX`) — the
+  SessionStart hook extracts it from the session transcript (it appears just after
+  the session connects). There is **no** `claude://code/<id>` deep-link scheme,
+  and the local session UUID is not the remote-control id.
 - **`install.sh`** — deploys everything, puts secrets in the macOS Keychain, and
   runs the relay as a per-user LaunchAgent.
 - **`cloudflare-setup.sh`** — exposes only `/v1/say` + `/v1/sessions` at a public
