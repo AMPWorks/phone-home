@@ -6,8 +6,8 @@ into a registered local `tmux` Claude session on your Mac → your phone is
 redirected to that session's viewer (the iOS Claude Code app).
 
 ```
-iPhone Shortcut:  GET /v1/sessions  →  Choose  →  Dictate
-   →  Open URLs (Safari):  https://<your-host>/v1/say?token=…&session=<id>&q=<text>
+iPhone Shortcut:  GET /v1/sessions  →  Choose  →  Dictate  →  URL-encode
+   →  Open URLs (Safari):  https://<your-host>/v1/say?token=…&session=<id>&q=<enc-text>
       →  phone-home relay:  auth → liveness+fingerprint → strict idle-guard
          →  tmux send-keys -l (literal) ; Enter   →  302 → that session's viewer_url
 ```
@@ -92,10 +92,13 @@ that it's automatic and re-runnable. Only `/v1/say` + `/v1/sessions` are routed.
 
 Build a Shortcut: **Get Contents of URL** `https://<host>/v1/sessions?token=<token>`
 (background) → **Choose from List** (the session labels) → **Dictate Text** →
-**Open URLs (Safari)** `https://<host>/v1/say?token=<token>&session=<chosen-id>&q=<dictated>`.
-The final step **must** be a foreground Safari navigation for the 302 to open the
-viewer. Bind it to the Action Button / Back Tap. A static per-session shortcut
-(skip the chooser) is the fast path.
+**URL Encode** the dictated text → **Open URLs (Safari)**
+`https://<host>/v1/say?token=<token>&session=<chosen-id>&q=<url-encoded-dictation>`.
+The **URL Encode** step is required — without it the first space ends the `q`
+value, so only the first dictated word reaches the relay. The final step **must**
+be a foreground Safari navigation for the 302 to open the viewer. Bind it to the
+Action Button / Back Tap. A static per-session shortcut (skip the chooser) is the
+fast path.
 
 > **If you enable replay protection** (`PHONE_HOME_REPLAY_TTL` > 0, off by default
 > in v1): the relay then **requires** a unique `&nonce=` on every `/v1/say`, and
