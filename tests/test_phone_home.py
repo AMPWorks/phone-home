@@ -203,6 +203,25 @@ class TestStrictGuard(unittest.TestCase):
         self._patch_capture("", rc=1)
         self.assertFalse(ph.pane_looks_idle("/s", "%a"))
 
+    def test_allows_amp_agent_remote_control_prompt(self):
+        # The amp-agent TUI draws "❯" as its idle prompt glyph; this used to be a
+        # blanket danger signal → always refused (real bug found on-box).
+        self._patch_capture(
+            "\u23fa HEARTBEAT_OK\n"
+            "\u2500\u2500 amp-agent (mac-mini) \u2500\u2500\n"
+            "\u276f \n"
+            "  bypass permissions on \u00b7 Remote Control active")
+        self.assertTrue(ph.pane_looks_idle("/s", "%a"))
+
+    def test_refuses_on_numbered_survey(self):
+        # The periodic "How is Claude doing this session?" survey is a numbered
+        # menu (colon-separated) — must refuse even though "\u276f" is also present.
+        self._patch_capture(
+            "How is Claude doing this session? (optional)\n"
+            "  1: Bad    2: Fine   3: Good   0: Dismiss\n"
+            "\u276f ")
+        self.assertFalse(ph.pane_looks_idle("/s", "%a"))
+
 
 class TestHTTP(unittest.TestCase):
     """End-to-end over a real loopback server, with the tmux layer mocked."""

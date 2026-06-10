@@ -133,14 +133,26 @@ def pane_looks_idle(socket_path, pane_id):
     if r.returncode != 0:
         return False
     tail = r.stdout.lower()
-    # Danger signals: a pending permission/confirmation or a menu/selection.
+    # Danger signals: a pending permission/confirmation prompt.
     danger = ("y/n", "(y/n)", "yes/no", "[y/n]", "do you want", "proceed?",
-              "approve", "❯", "press enter to", "1.", "2.", "select", "choose")
+              "approve", "press enter to", "select", "choose")
     if any(d in tail for d in danger):
         return False
-    # Idle signal: a Claude Code input prompt box is typically present near the
-    # bottom. We look for the prompt glyph / box edge the TUI draws. Best-effort.
-    idle = ("│ >", "> ", "╰", "esc to", "for shortcuts")
+    # A numbered-choice menu (a selection list, or the periodic "How is Claude
+    # doing this session?" survey: "1: Bad  2: Fine  3: Good  0: Dismiss"): two or
+    # more option markers like "1." / "1:" / "1)". Detected here so the bare "❯"
+    # prompt glyph does NOT have to be a blanket danger signal — it is the
+    # amp-agent TUI's *idle* input prompt, not (only) a menu arrow.
+    opt_markers = sum(
+        1 for n in range(0, 10) for sep in (".", ":", ")")
+        if (f"{n}{sep} " in tail) or tail.rstrip().endswith(f"{n}{sep}")
+    )
+    if opt_markers >= 2:
+        return False
+    # Idle signal: a Claude Code input prompt near the bottom. The amp-agent TUI
+    # draws "❯" as its prompt glyph; the standard TUI draws "│ >" / a "╰" box edge
+    # / the "for shortcuts" hint. (Menus are excluded by the check above.)
+    idle = ("❯", "│ >", "> ", "╰", "esc to", "for shortcuts")
     return any(s in tail for s in idle)
 
 
