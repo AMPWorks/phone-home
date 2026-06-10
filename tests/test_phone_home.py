@@ -222,12 +222,17 @@ class TestStrictGuard(unittest.TestCase):
             "\u276f ")
         self.assertFalse(ph.pane_looks_idle("/s", "%a"))
 
-    def test_refuses_on_yes_no_cursor(self):
-        # "\u276f" used as a selection cursor on a Yes/No (followed by option
-        # text) is a confirmation, NOT the idle input prompt → refuse (fail-open
-        # closed: bypassPermissions confirmations can render this way).
-        self._patch_capture("Would you like to continue with this edit\n \u276f Yes\n   No")
-        self.assertFalse(ph.pane_looks_idle("/s", "%a"))
+    def test_allows_idle_above_conversation_history(self):
+        # Past user turns render as "\u276f <message>" in the transcript; an idle
+        # session shows these ABOVE its bare "\u276f" input prompt. Must NOT refuse —
+        # treating any "\u276f <text>" line as a menu cursor was an over-refusal
+        # that made the prompt unusable on any session with conversation history.
+        self._patch_capture(
+            "\u276f What time is it\n"
+            "\u276f Testing updated Claude redirect\n"
+            "\u2500\u2500 amp-agent (mac-mini) \u2500\u2500\n\u276f \n"
+            "  bypass permissions on \u00b7 Remote Control active")
+        self.assertTrue(ph.pane_looks_idle("/s", "%a"))
 
     def test_refuses_on_trailing_question(self):
         # A pending question on a recent line (even above a bare "\u276f" prompt)

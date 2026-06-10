@@ -157,16 +157,16 @@ def pane_looks_idle(socket_path, pane_id):
     )
     if opt_markers >= 2:
         return False
-    # "❯" used as a SELECTION CURSOR — followed by option text on its line, e.g.
-    # "❯ Yes" / "❯ 1) Apply" — is a menu/confirmation, not the idle input prompt.
-    # (The idle prompt is a BARE "❯" with the input area empty.)
-    for ln in nonempty:
-        i = ln.find("❯")
-        if i != -1 and ln[i + 1:].strip():
-            return False
+    # NB: we deliberately do NOT treat a "❯ <text>" line as a menu cursor — in the
+    # Claude TUI past user turns render as "❯ <message>" in the transcript, so that
+    # would refuse on any session with conversation history (the exact
+    # over-refusal that made the bare-"❯" prompt unusable). Real confirmations are
+    # caught above by the danger keywords, the trailing-"?" check, and the
+    # numbered-menu check. A questionless/numberless "❯ Yes / No" menu is a known
+    # residual fail-open, tracked on the security-hardening follow-up.
     # Idle signal: a Claude Code input prompt near the bottom. The amp-agent TUI
     # draws "❯" as its prompt glyph; the standard TUI draws "│ >" / a "╰" box edge
-    # / the "for shortcuts" hint. (Menus / cursors are excluded above.)
+    # / the "for shortcuts" hint.
     idle = ("❯", "│ >", "> ", "╰", "esc to", "for shortcuts")
     return any(s in tail for s in idle)
 
