@@ -37,6 +37,11 @@ stand it up on your own box without any other infrastructure.
     swept.
   - A **strict idle-prompt guard** (default on): refuses to inject unless the pane
     looks like an idle Claude prompt, so a stray phrase can't auto-answer a y/n.
+    The one exception is the periodic **"How is Claude doing this session?" rating
+    survey** — an advisory, dismissable menu that would otherwise drop the message:
+    it's auto-dismissed (Escape, no rating selected), then idle is re-checked
+    (bounded, a few times over ~0.5s) before delivery. Real confirmations / genuine
+    selection menus / mid-stream output still refuse.
   - `send-keys -l` (literal) so dictated words like "enter"/"control c" are never
     parsed as keys; Enter is a separate keypress after a short delay.
 - **`register.sh` / `deregister.sh`** + **`hooks/session-{start,end}.sh`** — a

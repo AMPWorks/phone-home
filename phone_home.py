@@ -122,6 +122,14 @@ def pane_fingerprint(socket_path, pane_id):
     return out  # opaque "pid start" string; compared verbatim
 
 
+def capture_tail(socket_path, pane_id):
+    """The last screenful of the pane (`capture-pane -p -S -12`), or "" if the
+    capture fails. A single shared read so the strict guard (`pane_looks_idle`)
+    and the survey-detect (`is_rating_survey`) see the SAME window."""
+    r = _tmux(socket_path, "capture-pane", "-p", "-t", pane_id, "-S", "-12")
+    return r.stdout if r.returncode == 0 else ""
+
+
 def pane_looks_idle(socket_path, pane_id):
     """Best-effort §10 strict guard: does the pane look like an idle Claude input
     prompt (safe to inject), vs awaiting a y/n, in a menu, or mid-stream?
@@ -129,10 +137,9 @@ def pane_looks_idle(socket_path, pane_id):
     Heuristic — capture-pane is not authoritative. Conservative: only return True
     when the tail looks like an idle prompt; refuse on the slightest doubt.
     """
-    r = _tmux(socket_path, "capture-pane", "-p", "-t", pane_id, "-S", "-12")
-    if r.returncode != 0:
+    raw = capture_tail(socket_path, pane_id)
+    if not raw:
         return False
-    raw = r.stdout
     tail = raw.lower()
     nonempty = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
     # Danger signals: a pending permission/confirmation prompt.
@@ -169,6 +176,40 @@ def pane_looks_idle(socket_path, pane_id):
     # / the "for shortcuts" hint.
     idle = ("❯", "│ >", "> ", "╰", "esc to", "for shortcuts")
     return any(s in tail for s in idle)
+
+
+def is_rating_survey(text):
+    """True iff the captured tail is the dismissable Claude Code session-rating
+    survey ("How is Claude doing this session?" / "1: Bad 2: Fine 3: Good
+    0: Dismiss"). Requires BOTH the anchor phrase AND the `0: dismiss` affordance
+    so a chat message that merely quotes the phrase can't be mistaken for the live
+    menu. This survey is advisory and Escape-dismissable — unlike a real y/n
+    confirmation or a genuine selection menu, which must still refuse."""
+    t = (text or "").lower()
+    if "how is claude doing" not in t:
+        return False
+    return any(aff in t for aff in ("0: dismiss", "0. dismiss", "0) dismiss"))
+
+
+def dismiss_survey(socket_path, pane_id, submit_delay):
+    """Escape-dismiss the session-rating survey. Escape is a NAMED key (no `-l`),
+    so it clears the survey without selecting a Bad/Fine/Good rating; the
+    load-bearing `-l` literal flag stays on the message `inject` only."""
+    _tmux(socket_path, "send-keys", "-t", pane_id, "Escape")
+    time.sleep(submit_delay)
+
+
+def wait_idle(socket_path, pane_id, attempts=3, interval=0.2):
+    """Bounded re-check after dismissing the survey: a slow-settling TUI may take a
+    moment to return to the idle prompt. Re-checks `pane_looks_idle` up to
+    `attempts` times (~0.5s total at the default 3×0.2s), returning True on the
+    first idle check and False if all attempts fail (one dismiss, no retry loop)."""
+    for i in range(attempts):
+        if pane_looks_idle(socket_path, pane_id):
+            return True
+        if i < attempts - 1:
+            time.sleep(interval)
+    return False
 
 
 def inject(socket_path, pane_id, text, submit_delay):
@@ -459,7 +500,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404, "no live session %r" % key)
         try:
             if srv.strict and not pane_looks_idle(s["tmux_socket"], s["pane_id"]):
-                return self.send_error(409, "target not at an idle prompt (strict guard)")
+                # Not idle. If the ONLY blocker is the dismissable Claude
+                # session-rating survey ("How is Claude doing this session?"), a
+                # phone message must not be lost to that advisory poll: Escape it,
+                # then re-check (bounded) and inject. Real confirmations / genuine
+                # selection menus / mid-stream output still refuse. One dismiss
+                # attempt — a pane that keeps re-prompting can't wedge the request.
+                tail = capture_tail(s["tmux_socket"], s["pane_id"])
+                if not is_rating_survey(tail):
+                    return self.send_error(409, "target not at an idle prompt (strict guard)")
+                dismiss_survey(s["tmux_socket"], s["pane_id"], srv.submit_delay)
+                if not wait_idle(s["tmux_socket"], s["pane_id"]):
+                    return self.send_error(409, "target not idle after dismissing the rating survey")
             inject(s["tmux_socket"], s["pane_id"], text, srv.submit_delay)
         except (subprocess.CalledProcessError, OSError) as e:
             # OSError covers a missing `tmux` binary (FileNotFoundError) — e.g. a
