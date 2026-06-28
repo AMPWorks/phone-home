@@ -135,7 +135,8 @@ shortcut (skip the chooser) is the fast path.
 > can omit `session=` entirely — the relay auto-selects it. With zero or two-plus live
 > sessions a `/v1/say` with no `session=` (and no configured default) returns `400`
 > rather than guessing. So if you usually have one session, the Shortcut can drop both
-> the `/v1/sessions` fetch and the count branch and just dictate → `say?q=…`.
+> the `/v1/sessions` fetch and the count branch and just dictate → `say?q=…` (still
+> append `&nonce=…` if you've enabled replay protection — see the note below).
 
 > **If you enable replay protection** (`PHONE_HOME_REPLAY_TTL` > 0, off by default
 > in v1): the relay then **requires** a unique `&nonce=` on every `/v1/say`, and
