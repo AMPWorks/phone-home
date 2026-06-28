@@ -44,6 +44,14 @@ stand it up on your own box without any other infrastructure.
     selection menus / mid-stream output still refuse.
   - `send-keys -l` (literal) so dictated words like "enter"/"control c" are never
     parsed as keys; Enter is a separate keypress after a short delay.
+  - A **provenance marker** (default `[via phone] `) is prepended to the injected
+    dictation, so the receiving agent can tell phone-relayed input apart from text
+    the user typed directly — and react (routing, logging, tone). It's a single
+    server-global, **visible** prefix, left in the transcript (honest about
+    provenance, never stripped), and lives **inside** the literal `send-keys -l`
+    payload so the literal-injection safety is unaffected. Configure with
+    `--inject-marker` / `$PHONE_HOME_INJECT_MARKER`; set it empty to disable.
+    (amp-agent recognises this exact prefix — see its phone-home marker handling.)
 - **`register.sh` / `deregister.sh`** + **`hooks/session-{start,end}.sh`** — a
   session self-registers (Claude Code SessionStart hook) and deregisters
   (SessionEnd). The `viewer_url` is the remote-control **session URL** Claude

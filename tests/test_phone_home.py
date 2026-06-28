@@ -64,6 +64,40 @@ class TestInjectLiteralFlag(unittest.TestCase):
         self.assertEqual(enter[-1], "Enter")
         self.assertNotIn("-l", enter)
 
+    def test_inject_marker_is_inside_the_literal_payload(self):
+        """The provenance marker is prepended INSIDE the single `-l -- <payload>`
+        argument (literal safety preserved), and an empty marker is byte-for-byte
+        back-compatible."""
+        calls = []
+
+        class FakeCompleted:
+            returncode = 0
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return FakeCompleted()
+
+        orig = ph.subprocess.run
+        ph.subprocess.run = fake_run
+        try:
+            ph.inject("/s", "%3", "hello", submit_delay=0, marker="‹ph› ")
+            ph.inject("/s", "%3", "plain", submit_delay=0, marker="")          # back-compat
+            ph.inject("/s", "%3", "  ", submit_delay=0, marker="‹ph› ")        # empty msg → no inject
+        finally:
+            ph.subprocess.run = orig
+
+        paste_marked = calls[0]
+        self.assertIn("-l", paste_marked)
+        # marker + text are one literal arg, after `--`
+        self.assertEqual(paste_marked[-2:], ["--", "‹ph› hello"])
+        # marker="" is unchanged from the no-marker behaviour
+        paste_plain = calls[2]
+        self.assertEqual(paste_plain[-2:], ["--", "plain"])
+        # an empty/whitespace-only dictation injects nothing — not even a bare marker.
+        # calls so far: marked paste+Enter (0,1), plain paste+Enter (2,3); the 3rd
+        # inject() returned before any send-keys, so there is no 5th call.
+        self.assertEqual(len(calls), 4)
+
 
 class TestNonceCache(unittest.TestCase):
     def test_disabled_always_true(self):
@@ -288,7 +322,7 @@ class TestHTTP(unittest.TestCase):
         self._orig = (ph.pane_fingerprint, ph.pane_looks_idle, ph.inject)
         ph.pane_fingerprint = lambda sock, pane: "fp-" + pane
         ph.pane_looks_idle = lambda sock, pane: getattr(self, "idle", True)
-        ph.inject = lambda sock, pane, text, delay: self.injected.append((pane, text))
+        ph.inject = lambda sock, pane, text, delay, marker="": self.injected.append((pane, marker + text))
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), ph.Handler)
         self.srv.registry = ph.Registry(os.path.join(self.dir, "r.json"))
@@ -297,6 +331,7 @@ class TestHTTP(unittest.TestCase):
         self.srv.default_session = ""
         self.srv.submit_delay = 0
         self.srv.strict = True
+        self.srv.inject_marker = ""   # most tests assert un-prefixed text; one sets it
         self.srv.nonces = ph.NonceCache(0)
         self.port = self.srv.server_address[1]
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -405,6 +440,16 @@ class TestHTTP(unittest.TestCase):
         self.assertEqual(self.dismissed, [])
         self.assertEqual(self.injected, [])
 
+    def test_say_applies_inject_marker(self):
+        # With a server-global marker configured, injected dictation is prefixed
+        # (the marker is left visible in the transcript — honest about provenance).
+        self.srv.inject_marker = "[via phone] "
+        self._post("/v1/register", {"register_secret": "REG", "label": "r",
+                   "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "v"})
+        st, _, _ = self._get("/v1/say?token=TOK&session=r&q=hello%20world")
+        self.assertEqual(st, 302)
+        self.assertEqual(self.injected[-1], ("%1", "[via phone] hello world"))
+
     def test_say_wrong_token(self):
         st, _, _ = self._get("/v1/say?token=NOPE&session=x&q=hi")
         self.assertEqual(st, 403)
@@ -413,7 +458,7 @@ class TestHTTP(unittest.TestCase):
         self._post("/v1/register", {"register_secret": "REG", "label": "r", "tmux_socket": "/s",
                                     "pane_id": "%1", "viewer_url": "v"})
         sid = json.loads(self._get("/v1/sessions?token=TOK")[2])[0]["id"]
-        def _boom(sock, pane, text, delay):
+        def _boom(sock, pane, text, delay, marker=""):
             raise FileNotFoundError(2, "No such file or directory: 'tmux'")
         ph.inject = _boom  # simulate launchd PATH without /opt/homebrew/bin
         st, _, _ = self._get("/v1/say?token=TOK&session=%s&q=hi" % sid)

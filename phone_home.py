@@ -86,6 +86,14 @@ API_VERSION = "1"          # URL path version: /v1/<endpoint>
 SCHEMA_VERSION = 1         # registry-file schema version
 REG_FORMAT_VERSION = 1     # registration payload / stored-entry format version
 
+# Provenance marker prepended to injected dictation so the receiving agent can
+# tell phone-home-relayed input apart from text the user typed directly. A single
+# server-global, VISIBLE prefix (left in the transcript — honest about provenance,
+# not stripped); it lives INSIDE the literal `send-keys -l` payload, so the
+# load-bearing literal-injection safety is unaffected. amp-agent recognises this
+# exact prefix (see its phone-home marker handling). Empty disables the marker.
+INJECT_MARKER_DEFAULT = "[via phone] "
+
 
 def _flatten(text):
     """One line, trimmed. Enter submits in the TUI; a stray newline fires early."""
@@ -218,11 +226,18 @@ def wait_idle(socket_path, pane_id, attempts=3, interval=0.2):
     return False
 
 
-def inject(socket_path, pane_id, text, submit_delay):
-    """Paste literal text then submit. `-l` is the load-bearing safety flag."""
+def inject(socket_path, pane_id, text, submit_delay, marker=""):
+    """Paste literal text then submit. `-l` is the load-bearing safety flag.
+
+    `marker` (the phone-home provenance prefix) is prepended to the flattened text
+    and stays INSIDE the single literal `send-keys -l -- <payload>` argument, so
+    the literal-injection safety property is preserved. Applied only to a
+    non-empty message (a bare marker is never injected)."""
     text = _flatten(text)
     if not text:
         return
+    if marker:
+        text = marker + text
     # argv, never a shell. `-l` literal (no key-name parsing). `--` guards a
     # leading '-'. Target the exact pane on the captured socket.
     subprocess.run(["tmux", "-S", socket_path, "send-keys", "-t", pane_id,
@@ -508,17 +523,18 @@ class Handler(BaseHTTPRequestHandler):
             if srv.strict and not pane_looks_idle(s["tmux_socket"], s["pane_id"]):
                 # Not idle. If the ONLY blocker is the dismissable Claude
                 # session-rating survey ("How is Claude doing this session?"), a
-                # phone message must not be lost to that advisory poll: Escape it,
-                # then re-check (bounded) and inject. Real confirmations / genuine
-                # selection menus / mid-stream output still refuse. One dismiss
-                # attempt — a pane that keeps re-prompting can't wedge the request.
+                # phone message must not be lost to that advisory poll: dismiss it
+                # (its "0" affordance), then re-check (bounded) and inject. Real
+                # confirmations / genuine selection menus / mid-stream output still
+                # refuse. One dismiss attempt — a pane that keeps re-prompting
+                # can't wedge the request.
                 tail = capture_tail(s["tmux_socket"], s["pane_id"])
                 if not is_rating_survey(tail):
                     return self.send_error(409, "target not at an idle prompt (strict guard)")
                 dismiss_survey(s["tmux_socket"], s["pane_id"], srv.submit_delay)
                 if not wait_idle(s["tmux_socket"], s["pane_id"]):
                     return self.send_error(409, "target not idle after dismissing the rating survey")
-            inject(s["tmux_socket"], s["pane_id"], text, srv.submit_delay)
+            inject(s["tmux_socket"], s["pane_id"], text, srv.submit_delay, srv.inject_marker)
         except (subprocess.CalledProcessError, OSError) as e:
             # OSError covers a missing `tmux` binary (FileNotFoundError) — e.g. a
             # launchd PATH that lacks /opt/homebrew/bin — so it 502s, not 500s.
@@ -552,6 +568,11 @@ def main(argv=None):
                    help="seconds between paste and Enter (200ms is empirically safe for the Claude TUI)")
     p.add_argument("--replay-ttl", type=float, default=float(os.environ.get("PHONE_HOME_REPLAY_TTL", "0")),
                    help="single-use /say nonce window in seconds (§11-d); 0 disables")
+    p.add_argument("--inject-marker",
+                   default=os.environ.get("PHONE_HOME_INJECT_MARKER", INJECT_MARKER_DEFAULT),
+                   help="visible provenance prefix prepended to injected dictation so the "
+                        "receiving agent can tell it came via phone-home (default %r; "
+                        "set empty to disable)" % INJECT_MARKER_DEFAULT)
     g = p.add_mutually_exclusive_group()
     g.add_argument("--strict", dest="strict", action="store_true", default=True,
                    help="refuse injection unless the pane looks idle (default; §10)")
@@ -570,6 +591,7 @@ def main(argv=None):
     srv.default_session = args.default_session
     srv.submit_delay = args.submit_delay
     srv.strict = args.strict
+    srv.inject_marker = args.inject_marker
     srv.nonces = NonceCache(args.replay_ttl)
     print("phone-home on %s:%d (registry=%s, strict=%s, replay_ttl=%s)"
           % (args.bind, args.port, args.registry, args.strict, args.replay_ttl), file=sys.stderr)
