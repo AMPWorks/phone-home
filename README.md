@@ -6,8 +6,8 @@ into a registered local `tmux` Claude session on your Mac → your phone is
 redirected to that session's viewer (the iOS Claude Code app).
 
 ```
-iPhone Shortcut:  GET /v1/sessions  →  Choose  →  Dictate  →  URL-encode
-   →  Open URLs (Safari):  https://<your-host>/v1/say?token=…&session=<id>&q=<enc-text>
+iPhone Shortcut:  GET /v1/sessions  →  Choose label (auto-pick if one)  →  Dictate  →  URL-encode
+   →  Open URLs (Safari):  https://<your-host>/v1/say?token=…&session=<enc-label>&q=<enc-text>
       →  phone-home relay:  auth → liveness+fingerprint → strict idle-guard
          →  tmux send-keys -l (literal) ; Enter   →  302 → that session's viewer_url
 ```
@@ -107,15 +107,35 @@ that it's automatic and re-runnable. Only `/v1/say` + `/v1/sessions` are routed.
 
 ## iOS Shortcut
 
-Build a Shortcut: **Get Contents of URL** `https://<host>/v1/sessions?token=<token>`
-(background) → **Choose from List** (the session labels) → **Dictate Text** →
-**URL Encode** the dictated text → **Open URLs (Safari)**
-`https://<host>/v1/say?token=<token>&session=<chosen-id>&q=<url-encoded-dictation>`.
-The **URL Encode** step is required — without it the first space ends the `q`
-value, so only the first dictated word reaches the relay. The final step **must**
-be a foreground Safari navigation for the 302 to open the viewer. Bind it to the
-Action Button / Back Tap. A static per-session shortcut (skip the chooser) is the
-fast path.
+Build a Shortcut:
+
+1. **Get Contents of URL** `https://<host>/v1/sessions?token=<token>` (background) —
+   returns a list of `{id, label, repo}` for the live sessions.
+2. **Get Dictionary Value** → **Value** for **`label`** — this pulls out just the
+   list of label strings (e.g. `amp-agent (mac-mini)`), so the chooser shows one
+   clean tappable row per session instead of the stacked `id`/`label`/`repo` fields.
+3. **Count** the labels, then **If** count **is 1** → **Get Item from List** (Item 1)
+   so a single session is auto-selected; **Otherwise** → **Choose from List**. Both
+   branches produce the one chosen label. *(This count branch is optional — see the
+   auto-pick note below; you can also just always **Choose from List**.)*
+4. **Dictate Text**.
+5. **URL Encode** the chosen **label**, and **URL Encode** the dictated text.
+6. **Open URLs (Safari)**
+   `https://<host>/v1/say?token=<token>&session=<url-encoded-label>&q=<url-encoded-dictation>`.
+
+Passing the **label** as `session=` works because the relay's `resolve()` matches by
+`id` **or** `label`, and labels are unique among live sessions — so no id round-trip is
+needed. Both **URL Encode** steps are required: the label contains spaces/parens
+(`amp-agent (mac-mini)`) and the dictation contains spaces — without encoding, the first
+space ends the value. The final step **must** be a foreground Safari navigation for the
+302 to open the viewer. Bind it to the Action Button / Back Tap. A static per-session
+shortcut (skip the chooser) is the fast path.
+
+> **Single-session auto-pick (server-side).** When exactly **one** session is live, you
+> can omit `session=` entirely — the relay auto-selects it. With zero or two-plus live
+> sessions a `/v1/say` with no `session=` (and no configured default) returns `400`
+> rather than guessing. So if you usually have one session, the Shortcut can drop both
+> the `/v1/sessions` fetch and the count branch and just dictate → `say?q=…`.
 
 > **If you enable replay protection** (`PHONE_HOME_REPLAY_TTL` > 0, off by default
 > in v1): the relay then **requires** a unique `&nonce=` on every `/v1/say`, and

@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -504,6 +505,46 @@ class TestHTTP(unittest.TestCase):
         st, _, _ = self._get("/v1/say?token=TOK&session=r&q=hello%20world")
         self.assertEqual(st, 302)
         self.assertEqual(self.injected[-1], ("%1", "[via phone] hello world"))
+
+    def test_say_select_by_label_with_spaces_and_parens(self):
+        # The iOS Shortcut passes the chosen LABEL (URL-encoded) as session=.
+        # resolve() matches by label; this guards the realistic space/paren case
+        # the URL-encode step exists for (existing tests only used simple labels).
+        label = "amp-agent (mac-mini)"
+        self._post("/v1/register", {"register_secret": "REG", "label": label,
+                   "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "claude://code/m"})
+        enc = urllib.parse.quote(label, safe="")  # "amp-agent%20%28mac-mini%29"
+        st, loc, _ = self._get("/v1/say?token=TOK&session=%s&q=hi" % enc)
+        self.assertEqual(st, 302)
+        self.assertEqual(loc, "claude://code/m")
+        self.assertEqual(self.injected[-1], ("%1", "hi"))
+
+    def test_say_no_session_one_live_autopicks(self):
+        # No session= and no default_session, exactly one live session → auto-pick it.
+        self._post("/v1/register", {"register_secret": "REG", "label": "solo",
+                   "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "claude://code/solo"})
+        st, loc, _ = self._get("/v1/say?token=TOK&q=auto")
+        self.assertEqual(st, 302)
+        self.assertEqual(loc, "claude://code/solo")
+        self.assertEqual(self.injected[-1], ("%1", "auto"))
+
+    def test_say_no_session_zero_live_400(self):
+        # No session=, no default, no live sessions → 400 (never a broken inject).
+        st, _, _ = self._get("/v1/say?token=TOK&q=hi")
+        self.assertEqual(st, 400)
+        self.assertEqual(self.injected, [])
+
+    def test_say_no_session_two_live_is_400_never_guesses(self):
+        # No session=, no default, TWO live sessions → 400 (bounded to exactly one;
+        # the relay must never silently guess which session to inject into).
+        self._post("/v1/register", {"register_secret": "REG", "label": "a",
+                   "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "u1"})
+        self._post("/v1/register", {"register_secret": "REG", "label": "b",
+                   "tmux_socket": "/s", "pane_id": "%2", "viewer_url": "u2"})
+        self.assertEqual(len(json.loads(self._get("/v1/sessions?token=TOK")[2])), 2)
+        st, _, _ = self._get("/v1/say?token=TOK&q=hi")
+        self.assertEqual(st, 400)
+        self.assertEqual(self.injected, [])
 
     def test_say_wrong_token(self):
         st, _, _ = self._get("/v1/say?token=NOPE&session=x&q=hi")

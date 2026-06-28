@@ -535,10 +535,23 @@ class Handler(BaseHTTPRequestHandler):
         key = (q.get("session") or [srv.default_session or ""])[0]
         text = (q.get("q") or [""])[0]
         if not key:
-            return self.send_error(400, "no session and no default")
-        s = srv.registry.resolve(key)
-        if s is None:
-            return self.send_error(404, "no live session %r" % key)
+            # No session given and no default configured: auto-pick ONLY when
+            # exactly one live session exists. Bounded strictly to the one-session
+            # case — zero or two+ stay a 400, so the relay never silently guesses
+            # which session to inject into. Lets the iOS Shortcut drop its
+            # single-session count branch.
+            live = srv.registry.live()
+            if len(live) == 1:
+                s = live[0]
+            elif not live:
+                return self.send_error(400, "no session given and no live sessions")
+            else:
+                return self.send_error(
+                    400, "no session given and %d live sessions (ambiguous)" % len(live))
+        else:
+            s = srv.registry.resolve(key)
+            if s is None:
+                return self.send_error(404, "no live session %r" % key)
         try:
             if srv.strict and not pane_looks_idle(s["tmux_socket"], s["pane_id"]):
                 # Not idle. If the ONLY blocker is the dismissable Claude
