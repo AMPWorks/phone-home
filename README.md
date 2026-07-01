@@ -96,6 +96,44 @@ Auto (recommended): add the hooks to your Claude Code `settings.json` SessionSta
 Manual (from inside the tmux pane): `~/.claude/phone-home/register.sh --session-id <id>`
 (or pass `--viewer <url>` / `--label <name>`).
 
+### Opening a fresh remote-controlled session that registers
+
+To spin up a NEW routable session on the box, the launch is just:
+
+```bash
+claude --permission-mode bypassPermissions --remote-control --name 'my session (mac-mini)'
+```
+
+- `--remote-control` registers the session with Anthropic so the iOS app / claude.ai
+  can attach — **this is the registration that silently ages out over long uptimes**;
+  a fresh relaunch refreshes it.
+- `--name '<label>'` is the label the phone-home chooser shows — make it distinct
+  (e.g. suffix the host, `(mac-mini)`). `--permission-mode bypassPermissions` is optional
+  (it lets phone-dictated input run without prompts; drop it for normal prompts).
+
+For phone-home to actually **register** it, two things must hold — otherwise the session
+launches but isn't routable:
+
+1. **It must run inside `tmux`** (the relay injects via `tmux send-keys`; a non-tmux
+   session no-ops the SessionStart hook and is never registered).
+2. **The `session-start.sh` hook must be active in that session's settings.** The hook
+   polls the session transcript for the `https://claude.ai/code/session_XXX` viewer URL
+   (emitted a few seconds after remote-control connects) and registers with it. Wire it
+   either per-project (in that repo's `.claude/settings.json`) or **globally** in
+   `~/.claude/settings.json` so every tmux session registers regardless of CWD.
+
+Full recipe (auto-registers ~10 s after launch):
+
+```bash
+tmux new-session -d -s mysession -c <dir-with-the-hook>
+tmux send-keys -t mysession "claude --permission-mode bypassPermissions --remote-control --name 'mysession (mac-mini)'" Enter
+# verify it registered:
+curl -s "http://127.0.0.1:8765/v1/sessions?token=$(security find-generic-password -a "$USER" -s phone-home-token -w)" | python3 -m json.tool
+```
+
+Deregister on exit is automatic via the `session-end.sh` SessionEnd hook (or
+`~/.claude/phone-home/deregister.sh --label <name>`).
+
 ## Expose it publicly (optional)
 
 ```bash
