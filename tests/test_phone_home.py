@@ -257,6 +257,27 @@ class TestStrictGuard(unittest.TestCase):
         self.assertFalse(ph.is_rating_survey(""))
         self.assertFalse(ph.is_rating_survey(None))
 
+    def test_dismiss_survey_presses_zero_not_escape(self):
+        # Regression (live-TUI 2026-07-01): the session-rating survey is dismissed
+        # by its own "0: Dismiss" affordance, NOT Escape. An Escape send-key left
+        # the real survey on screen, so /say 409'd "not idle after dismissing".
+        # The prior tests mocked dismiss_survey, so the actual keystroke was never
+        # asserted — this exercises the real function.
+        calls = []
+        saved_tmux, saved_sleep = ph._tmux, ph.time.sleep
+        ph._tmux = lambda sock, *a: calls.append(a)
+        ph.time.sleep = lambda *a: None
+        try:
+            ph.dismiss_survey("/sock", "%1", 0.0)
+        finally:
+            ph._tmux, ph.time.sleep = saved_tmux, saved_sleep
+        self.assertEqual(len(calls), 1)                 # exactly one send-keys
+        args = calls[0]
+        self.assertEqual(args[0], "send-keys")
+        self.assertIn("-l", args)                       # literal keystroke, not a key-name
+        self.assertEqual(args[-1], "0")                 # the "0: Dismiss" option
+        self.assertNotIn("Escape", args)                # Escape does not dismiss this survey
+
 
 class TestHTTP(unittest.TestCase):
     """End-to-end over a real loopback server, with the tmux layer mocked."""

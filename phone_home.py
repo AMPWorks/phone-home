@@ -192,10 +192,16 @@ def is_rating_survey(text):
 
 
 def dismiss_survey(socket_path, pane_id, submit_delay):
-    """Escape-dismiss the session-rating survey. Escape is a NAMED key (no `-l`),
-    so it clears the survey without selecting a Bad/Fine/Good rating; the
-    load-bearing `-l` literal flag stays on the message `inject` only."""
-    _tmux(socket_path, "send-keys", "-t", pane_id, "Escape")
+    """Dismiss the session-rating survey by pressing its own `0: Dismiss`
+    affordance, sent as a LITERAL key (`-l -- "0"`).
+
+    Escape does NOT dismiss this survey — verified against the live Claude Code
+    TUI on 2026-07-01 (an `Escape` send-key left the survey on screen, so `/say`
+    then 409'd "not idle after dismissing"). The survey is a numbered menu whose
+    only exit that doesn't record a rating is `0: Dismiss`; the `1/2/3`
+    Bad/Fine/Good options are never sent, so no rating is submitted. `-l` keeps
+    the "0" a literal keystroke (not a tmux key-name)."""
+    _tmux(socket_path, "send-keys", "-t", pane_id, "-l", "--", "0")
     time.sleep(submit_delay)
 
 
