@@ -240,6 +240,44 @@ class TestStrictGuard(unittest.TestCase):
         self._patch_capture("Overwrite this file?\n \u276f ")
         self.assertFalse(ph.pane_looks_idle("/s", "%a"))
 
+    def test_is_rating_survey_matches_the_survey(self):
+        self.assertTrue(ph.is_rating_survey(
+            "How is Claude doing this session? (optional)\n"
+            "  1: Bad    2: Fine   3: Good   0: Dismiss\n\u276f "))
+
+    def test_is_rating_survey_requires_the_dismiss_affordance(self):
+        # The anchor phrase alone (e.g. a transcript line quoting it) must NOT
+        # match \u2014 `0: dismiss` is required so a chat message can't fake the menu.
+        self.assertFalse(ph.is_rating_survey(
+            "\u276f how is claude doing this session lately?"))
+
+    def test_is_rating_survey_false_on_generic_menu_idle_and_empty(self):
+        self.assertFalse(ph.is_rating_survey("1. option one\n2. option two\n\u276f select"))
+        self.assertFalse(ph.is_rating_survey("\u2502 > \n\u2570\u2500 esc to interrupt"))
+        self.assertFalse(ph.is_rating_survey(""))
+        self.assertFalse(ph.is_rating_survey(None))
+
+    def test_dismiss_survey_presses_zero_not_escape(self):
+        # Regression (live-TUI 2026-07-01): the session-rating survey is dismissed
+        # by its own "0: Dismiss" affordance, NOT Escape. An Escape send-key left
+        # the real survey on screen, so /say 409'd "not idle after dismissing".
+        # The prior tests mocked dismiss_survey, so the actual keystroke was never
+        # asserted — this exercises the real function.
+        calls = []
+        saved_tmux, saved_sleep = ph._tmux, ph.time.sleep
+        ph._tmux = lambda sock, *a: calls.append(a)
+        ph.time.sleep = lambda *a: None
+        try:
+            ph.dismiss_survey("/sock", "%1", 0.0)
+        finally:
+            ph._tmux, ph.time.sleep = saved_tmux, saved_sleep
+        self.assertEqual(len(calls), 1)                 # exactly one send-keys
+        args = calls[0]
+        self.assertEqual(args[0], "send-keys")
+        self.assertIn("-l", args)                       # literal keystroke, not a key-name
+        self.assertEqual(args[-1], "0")                 # the "0: Dismiss" option
+        self.assertNotIn("Escape", args)                # Escape does not dismiss this survey
+
 
 class TestHTTP(unittest.TestCase):
     """End-to-end over a real loopback server, with the tmux layer mocked."""
@@ -310,6 +348,62 @@ class TestHTTP(unittest.TestCase):
         self.assertEqual(st, 302)
         self.assertEqual(loc, "claude://code/abc")
         self.assertEqual(self.injected[-1], ("%1", "hello world"))
+
+    # -- "How is Claude doing?" survey: dismiss-then-deliver (not drop) ----------
+    def _arm_say_capture(self, capture_text, idle_seq):
+        """For _say-guard tests: capture_tail() reads via _tmux → return the given
+        pane capture (so the real is_rating_survey runs); pane_looks_idle yields
+        idle_seq across calls; dismiss_survey is a recorder; wait_idle's sleeps are
+        no-ops. Restored after the test (TestHTTP.tearDown only restores 3 names)."""
+        class R:
+            returncode = 0
+            stdout = capture_text
+        self.dismissed = []
+        seq = iter(idle_seq)
+        # NB: tearDown already restores pane_looks_idle + inject; only save/restore
+        # the names it does NOT (else an addCleanup restore — which runs AFTER
+        # tearDown — would re-leak the setUp lambda into later test classes).
+        saved = (ph._tmux, ph.dismiss_survey, ph.time.sleep)
+        ph._tmux = lambda sock, *a: R()
+        ph.pane_looks_idle = lambda sock, pane: next(seq)   # restored by tearDown
+        ph.dismiss_survey = lambda sock, pane, delay: self.dismissed.append(pane)
+        ph.time.sleep = lambda *a: None
+        def _restore():
+            ph._tmux, ph.dismiss_survey, ph.time.sleep = saved
+        self.addCleanup(_restore)
+
+    SURVEY = ("How is Claude doing this session? (optional)\n"
+              "  1: Bad  2: Fine  3: Good  0: Dismiss\n❯ ")
+
+    def test_say_dismisses_rating_survey_then_injects(self):
+        self._post("/v1/register", {"register_secret": "REG", "label": "r",
+                   "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "v"})
+        # guard sees the survey (not idle), then idle after dismiss.
+        self._arm_say_capture(self.SURVEY, idle_seq=[False, True])
+        st, _, _ = self._get("/v1/say?token=TOK&session=r&q=hi")
+        self.assertEqual(st, 302)
+        self.assertEqual(self.dismissed, ["%1"])          # dismissed exactly once
+        self.assertEqual(self.injected[-1], ("%1", "hi"))
+
+    def test_say_survey_dismiss_but_still_not_idle_is_409_one_attempt(self):
+        self._post("/v1/register", {"register_secret": "REG", "label": "r",
+                   "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "v"})
+        # survey detected, dismissed, but the bounded re-check never goes idle.
+        self._arm_say_capture(self.SURVEY, idle_seq=[False] * 8)
+        st, _, _ = self._get("/v1/say?token=TOK&session=r&q=hi")
+        self.assertEqual(st, 409)
+        self.assertEqual(self.dismissed, ["%1"])          # one dismiss, no retry loop
+        self.assertEqual(self.injected, [])               # nothing injected
+
+    def test_say_non_survey_menu_still_refuses_without_dismiss(self):
+        self._post("/v1/register", {"register_secret": "REG", "label": "r",
+                   "tmux_socket": "/s", "pane_id": "%1", "viewer_url": "v"})
+        # a genuine confirmation — not the survey → 409, never dismissed/injected.
+        self._arm_say_capture("Do you want to proceed? (y/n)", idle_seq=[False])
+        st, _, _ = self._get("/v1/say?token=TOK&session=r&q=hi")
+        self.assertEqual(st, 409)
+        self.assertEqual(self.dismissed, [])
+        self.assertEqual(self.injected, [])
 
     def test_say_wrong_token(self):
         st, _, _ = self._get("/v1/say?token=NOPE&session=x&q=hi")
