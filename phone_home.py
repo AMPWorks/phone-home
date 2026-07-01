@@ -45,6 +45,7 @@ Security knobs:
 import argparse
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -166,10 +167,15 @@ def pane_looks_idle(socket_path, pane_id):
     # more option markers like "1." / "1:" / "1)". Detected here so the bare "❯"
     # prompt glyph does NOT have to be a blanket danger signal — it is the
     # amp-agent TUI's *idle* input prompt, not (only) a menu arrow.
-    opt_markers = sum(
-        1 for n in range(0, 10) for sep in (".", ":", ")")
-        if (f"{n}{sep} " in tail) or tail.rstrip().endswith(f"{n}{sep}")
-    )
+    #
+    # Each marker must be a **standalone token** — the digit preceded by
+    # start-of-line or whitespace, and the separator followed by whitespace or
+    # end. Otherwise incidental digits in ordinary output false-positived as a
+    # menu and 409'd an idle pane: e.g. "(PR #2)" / "(PR #3)" in a transcript,
+    # "v2.0", "$0.00", a time like "19:43" (observed on the live amp-agent pane,
+    # 2026-07-01). The survey's inline "1: 2: 3: 0:" and multi-line lists still
+    # match (their markers are whitespace-delimited).
+    opt_markers = len(re.findall(r"(?<!\S)\d[.:)](?=\s|$)", tail))
     if opt_markers >= 2:
         return False
     # NB: we deliberately do NOT treat a "❯ <text>" line as a menu cursor — in the

@@ -229,6 +229,30 @@ class TestStrictGuard(unittest.TestCase):
         self._patch_capture("1. option one\n2. option two\n❯ select")
         self.assertFalse(ph.pane_looks_idle("/s", "%a"))
 
+    def test_allows_idle_prompt_with_incidental_numbered_tokens(self):
+        # Regression (live amp-agent pane, 2026-07-01): incidental "digit)/./:"
+        # tokens in ordinary transcript text — "(PR #2)", "(PR #3)", "v2.0",
+        # "$0.00", a "19:43" clock — must NOT read as a numbered menu and 409 an
+        # otherwise-idle prompt. Option markers only count when whitespace-delimited
+        # (start-of-line / after a space), not mid-token like "#2)".
+        self._patch_capture(
+            "❯ test\n"
+            "⏺ Got it — receiving you (PR #2) / (PR #3), v2.0, $0.00 at 19:43.\n"
+            "── amp-agent (mac-mini) ──\n"
+            "❯ \n"
+        )
+        self.assertTrue(ph.pane_looks_idle("/s", "%a"))
+
+    def test_refuses_on_inline_survey_menu(self):
+        # The survey renders its options inline on one line; those markers ARE
+        # whitespace-delimited, so it still counts as a menu (not idle) — which
+        # routes _say into the dismiss-then-inject path.
+        self._patch_capture(
+            "How is Claude doing this session? (optional)\n"
+            "  1: Bad    2: Fine   3: Good   0: Dismiss\n❯ "
+        )
+        self.assertFalse(ph.pane_looks_idle("/s", "%a"))
+
     def test_allows_idle_prompt(self):
         self._patch_capture("│ > \n╰─ esc to interrupt · ? for shortcuts")
         self.assertTrue(ph.pane_looks_idle("/s", "%a"))
