@@ -225,6 +225,23 @@ class TestStrictGuard(unittest.TestCase):
         self._patch_capture("Do you want to proceed? (y/n)")
         self.assertFalse(ph.pane_looks_idle("/s", "%a"))
 
+    def test_allows_idle_prompt_with_words_containing_danger_substrings(self):
+        # Regression (live amp-agent pane, 2026-07-01): danger verbs match as WHOLE
+        # words. Ordinary transcript text — a "session selector" task row, an
+        # "approved", "the agent chooses" — must NOT 409 an idle prompt.
+        self._patch_capture(
+            "❯ list\n"
+            "  Improve the iOS Shortcut session selector — approved; the agent chooses.\n"
+            "── amp-agent (mac-mini) ──\n"
+            "❯ \n"
+        )
+        self.assertTrue(ph.pane_looks_idle("/s", "%a"))
+
+    def test_refuses_on_whole_word_select_menu(self):
+        # A genuine selection prompt still refuses (the word "select" stands alone).
+        self._patch_capture("Select an option to continue\n❯ ")
+        self.assertFalse(ph.pane_looks_idle("/s", "%a"))
+
     def test_refuses_on_menu(self):
         self._patch_capture("1. option one\n2. option two\n❯ select")
         self.assertFalse(ph.pane_looks_idle("/s", "%a"))

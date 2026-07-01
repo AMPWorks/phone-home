@@ -151,10 +151,17 @@ def pane_looks_idle(socket_path, pane_id):
         return False
     tail = raw.lower()
     nonempty = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
-    # Danger signals: a pending permission/confirmation prompt.
+    # Danger signals: a pending permission/confirmation prompt. Specific
+    # tokens/phrases are safe as substrings.
     danger = ("y/n", "(y/n)", "yes/no", "[y/n]", "do you want", "proceed?",
-              "approve", "press enter to", "select", "choose")
+              "press enter to")
     if any(d in tail for d in danger):
+        return False
+    # Generic verbs that also live inside ordinary words ("selector", "selected",
+    # "chooses", "approved") must match as WHOLE WORDS — else a task title like
+    # "iOS Shortcut session selector" sitting in the transcript 409'd an idle pane
+    # (live amp-agent pane, 2026-07-01). A real menu still says "select"/"choose".
+    if re.search(r"\b(?:approve|select|choose)\b", tail):
         return False
     # A pending question: any of the last few visible lines ends in "?" (e.g.
     # "Continue?", "Overwrite this file?") — a confirmation the danger keywords
