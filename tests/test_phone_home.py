@@ -246,6 +246,20 @@ class TestStrictGuard(unittest.TestCase):
         self._patch_capture("1. option one\n2. option two\n❯ select")
         self.assertFalse(ph.pane_looks_idle("/s", "%a"))
 
+    def test_ignores_stale_scrollback_prompts(self):
+        # Hardening (2026-07-01): only the current prompt region (last ~15 non-empty
+        # lines) is scanned. Stale transcript far above — an answered "(y/n)", a
+        # "do you want", an old numbered menu — must NOT 409 an idle prompt once it
+        # has scrolled out of the region.
+        stale = (
+            "Do you want to proceed? (y/n)\n"       # old confirmation, answered
+            "1. old option   2. another one\n"      # old menu
+            "❯ yes\n"                                # user's past answer
+        )
+        filler = "".join(f"output line {i}\n" for i in range(20))  # pushes it out
+        self._patch_capture(stale + filler + "── amp-agent (mac-mini) ──\n❯ \n")
+        self.assertTrue(ph.pane_looks_idle("/s", "%a"))
+
     def test_allows_idle_prompt_with_incidental_numbered_tokens(self):
         # Regression (live amp-agent pane, 2026-07-01): incidental "digit)/./:"
         # tokens in ordinary transcript text — "(PR #2)", "(PR #3)", "v2.0",

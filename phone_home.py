@@ -149,19 +149,26 @@ def pane_looks_idle(socket_path, pane_id):
     raw = capture_tail(socket_path, pane_id)
     if not raw:
         return False
-    tail = raw.lower()
     nonempty = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
+    # Scan only the CURRENT prompt region — the last ~15 non-empty lines (the
+    # pending prompt / menu / survey + its immediate context + the status bar) —
+    # NOT the whole `-S -12` scrollback. Scanning the full scrollback let STALE
+    # transcript content 409 an idle pane: a past y/n, a "do you want" in earlier
+    # prose, an old menu, a task title. A real pending prompt always renders in
+    # this region, immediately above the input box (root cause of the 2026-07-01
+    # over-refusals, together with the substring→boundary fixes below).
+    recent = "\n".join(nonempty[-15:]).lower()
     # Danger signals: a pending permission/confirmation prompt. Specific
     # tokens/phrases are safe as substrings.
     danger = ("y/n", "(y/n)", "yes/no", "[y/n]", "do you want", "proceed?",
               "press enter to")
-    if any(d in tail for d in danger):
+    if any(d in recent for d in danger):
         return False
     # Generic verbs that also live inside ordinary words ("selector", "selected",
     # "chooses", "approved") must match as WHOLE WORDS — else a task title like
-    # "iOS Shortcut session selector" sitting in the transcript 409'd an idle pane
-    # (live amp-agent pane, 2026-07-01). A real menu still says "select"/"choose".
-    if re.search(r"\b(?:approve|select|choose)\b", tail):
+    # "iOS Shortcut session selector" 409'd an idle pane (live, 2026-07-01). A
+    # real menu still says "select"/"choose".
+    if re.search(r"\b(?:approve|select|choose)\b", recent):
         return False
     # A pending question: any of the last few visible lines ends in "?" (e.g.
     # "Continue?", "Overwrite this file?") — a confirmation the danger keywords
@@ -182,7 +189,7 @@ def pane_looks_idle(socket_path, pane_id):
     # "v2.0", "$0.00", a time like "19:43" (observed on the live amp-agent pane,
     # 2026-07-01). The survey's inline "1: 2: 3: 0:" and multi-line lists still
     # match (their markers are whitespace-delimited).
-    opt_markers = len(re.findall(r"(?<!\S)\d[.:)](?=\s|$)", tail))
+    opt_markers = len(re.findall(r"(?<!\S)\d[.:)](?=\s|$)", recent))
     if opt_markers >= 2:
         return False
     # NB: we deliberately do NOT treat a "❯ <text>" line as a menu cursor — in the
@@ -196,7 +203,7 @@ def pane_looks_idle(socket_path, pane_id):
     # draws "❯" as its prompt glyph; the standard TUI draws "│ >" / a "╰" box edge
     # / the "for shortcuts" hint.
     idle = ("❯", "│ >", "> ", "╰", "esc to", "for shortcuts")
-    return any(s in tail for s in idle)
+    return any(s in recent for s in idle)
 
 
 def is_rating_survey(text):
